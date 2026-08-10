@@ -1,7 +1,7 @@
 import posthog from "posthog-js";
 
 const SILENT = true;
-const IS_VERCEL = window?.location?.href.includes("musehq.vercel.app");
+const IS_VERCEL = window?.location?.href.includes("cyengine-starter.vercel.app");
 const IS_LOCAL = window?.location?.href.includes("localhost:");
 
 if (!IS_VERCEL && !IS_LOCAL) {
