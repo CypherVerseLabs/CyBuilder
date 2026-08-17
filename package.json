@@ -1,6 +1,22 @@
 {
-  "name": "cyengine-starter",
+  "name": "cybuilder",
   "version": "0.0.4",
+  "private": false,
+  "description": "A visual scene builder for the 3D Web.",
+  "keywords": [
+    "react",
+    "3d",
+    "cyengine",
+    "webxr",
+    "threejs",
+    "cyengine"
+  ],
+  "license": "MIT",
+  "homepage": "https://cypherverse.space",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CypherVerseLabs/cybuilder.git"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build && next export",
@@ -12,7 +28,10 @@
   "dependencies": {
     "@react-spring/core": "^10.0.1",
     "@react-spring/three": "^10.0.1",
+    "@react-three/cannon": "^6.6.0",
+    "@react-three/drei": "9.65.3",
     "cyengine": "^2.0.7",
+    "jszip": "^3.10.1",
     "next": "^12.1.6",
     "posthog-js": "^1.257.0",
     "react": "^18.1.0",
