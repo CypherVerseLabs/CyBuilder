@@ -8,6 +8,8 @@ import {
   useState,
 } from "react";
 
+import JSZip from "jszip";
+
 import {
   Scene,
   SceneObject,
@@ -22,12 +24,19 @@ import {
   getDescendantIds,
 } from "./hierarchy";
 
+import {
+  LocalAsset,
+  createAssetId,
+  createAssetObjectUrl,
+  sanitizeAssetFileName,
+} from "./AssetManager";
+
 
 /* =========================================
    TYPES
 ========================================= */
 
-export type SceneObjectUpdate = {
+type SceneObjectUpdate = {
   transform?: Partial<Transform>;
 
   props?: Record<string, unknown>;
@@ -49,7 +58,8 @@ export type SceneObjectUpdate = {
 export const SCENE_FILE_FORMAT =
   "cybuilder-scene";
 
-export const SCENE_FILE_VERSION = 1;
+export const SCENE_FILE_VERSION =
+  2;
 
 
 type SceneFile = {
@@ -75,7 +85,24 @@ type EditorContextValue = {
   editorActive: boolean;
 
 
-  /* HISTORY */
+  /* =======================================
+     ASSETS
+  ======================================= */
+
+  assets: LocalAsset[];
+
+  addAsset: (
+    file: File
+  ) => string;
+
+  removeAsset: (
+    id: string
+  ) => void;
+
+
+  /* =======================================
+     UNDO / REDO
+  ======================================= */
 
   canUndo: boolean;
 
@@ -86,14 +113,18 @@ type EditorContextValue = {
   redo: () => void;
 
 
-  /* SELECTION */
+  /* =======================================
+     SELECTION
+  ======================================= */
 
   select: (
     id?: string
   ) => void;
 
 
-  /* TRANSFORM */
+  /* =======================================
+     TRANSFORM
+  ======================================= */
 
   setTransformMode: (
     mode: TransformMode
@@ -106,7 +137,9 @@ type EditorContextValue = {
   endTransform: () => void;
 
 
-  /* EDITOR */
+  /* =======================================
+     EDITOR
+  ======================================= */
 
   setEditorActive: (
     active: boolean
@@ -115,7 +148,9 @@ type EditorContextValue = {
   toggleEditor: () => void;
 
 
-  /* SCENE */
+  /* =======================================
+     SCENE
+  ======================================= */
 
   addObject: (
     object: SceneObject
@@ -140,7 +175,9 @@ type EditorContextValue = {
   ) => void;
 
 
-  /* HIERARCHY */
+  /* =======================================
+     HIERARCHY
+  ======================================= */
 
   setParent: (
     id: string,
@@ -148,13 +185,15 @@ type EditorContextValue = {
   ) => void;
 
 
-  /* SAVE / LOAD */
+  /* =======================================
+     SAVE / LOAD
+  ======================================= */
 
-  saveScene: () => void;
+  saveScene: () => Promise<void>;
 
   loadScene: (
-    scene: Scene
-  ) => void;
+    file: File
+  ) => Promise<void>;
 };
 
 
@@ -185,7 +224,7 @@ const EditorContext =
 
 
 /* =========================================
-   PROVIDER
+   PROVIDER PROPS
 ========================================= */
 
 type EditorProviderProps = {
@@ -195,16 +234,134 @@ type EditorProviderProps = {
 };
 
 
+/* =========================================
+   DEEP SCENE CLONE
+========================================= */
+
+function cloneScene(
+  scene: Scene
+): Scene {
+
+  return structuredClone(
+    scene
+  );
+}
+
+
+/* =========================================
+   REWRITE LOCAL ASSETS FOR SAVE
+========================================= */
+
+function rewriteSceneForSave(
+  scene: Scene,
+  assets: LocalAsset[]
+): Scene {
+
+  const assetByUrl =
+    new Map<string, LocalAsset>();
+
+  for (
+    const asset of assets
+  ) {
+    assetByUrl.set(
+      asset.objectUrl,
+      asset
+    );
+  }
+
+  const cloned =
+    cloneScene(
+      scene
+    );
+
+  const usedNames =
+    new Map<string, number>();
+
+  for (
+    const object of cloned.objects
+  ) {
+
+    const props =
+      object.props as Record<
+        string,
+        unknown
+      >;
+
+    for (
+      const key of Object.keys(
+        props
+      )
+    ) {
+
+      const value =
+        props[key];
+
+      if (
+        typeof value !== "string"
+      ) {
+        continue;
+      }
+
+      const asset =
+        assetByUrl.get(
+          value
+        );
+
+      if (!asset) {
+        continue;
+      }
+
+      const safeName =
+        sanitizeAssetFileName(
+          asset.name
+        );
+
+      const count =
+        usedNames.get(
+          safeName
+        ) ?? 0;
+
+      usedNames.set(
+        safeName,
+        count + 1
+      );
+
+      const finalName =
+        count === 0
+          ? safeName
+          : `${count}-${safeName}`;
+
+      props[key] =
+        `assets/${finalName}`;
+    }
+  }
+
+  return cloned;
+}
+
+
+/* =========================================
+   PROVIDER
+========================================= */
+
 export function EditorProvider({
   children,
   initialScene,
 }: EditorProviderProps) {
+
+  /* =======================================
+     SCENE
+  ======================================= */
 
   const [scene, setScene] =
     useState<Scene>(
       initialScene ?? emptyScene
     );
 
+
+  /* =======================================
+     HISTORY
+  ======================================= */
 
   const [history, setHistory] =
     useState<Scene[]>([]);
@@ -213,18 +370,52 @@ export function EditorProvider({
     useState<Scene[]>([]);
 
 
+  /* =======================================
+     ASSETS
+  ======================================= */
+
+  const [
+    assets,
+    setAssets,
+  ] = useState<LocalAsset[]>([]);
+
+
+  /* =======================================
+     ASSET REF
+  ======================================= */
+
+  const assetsRef =
+    useRef<LocalAsset[]>([]);
+
+  assetsRef.current =
+    assets;
+
+
+  /* =======================================
+     TRANSFORM TRANSACTION
+  ======================================= */
+
   const transformTransaction =
     useRef<{
       id: string;
+
       scene: Scene;
     } | null>(null);
 
+
+  /* =======================================
+     SELECTION
+  ======================================= */
 
   const [
     selectedId,
     setSelectedId,
   ] = useState<string>();
 
+
+  /* =======================================
+     TRANSFORM MODE
+  ======================================= */
 
   const [
     transformMode,
@@ -234,10 +425,96 @@ export function EditorProvider({
   );
 
 
+  /* =======================================
+     EDITOR ACTIVE
+  ======================================= */
+
   const [
     editorActive,
     setEditorActiveState,
   ] = useState(true);
+
+
+  /* =======================================
+     ADD ASSET
+  ======================================= */
+
+  const addAsset =
+    useCallback(
+      (
+        file: File
+      ): string => {
+
+        const id =
+          createAssetId();
+
+        const objectUrl =
+          createAssetObjectUrl(
+            file
+          );
+
+        const asset: LocalAsset = {
+          id,
+
+          name:
+            file.name,
+
+          type:
+            file.type ||
+            "application/octet-stream",
+
+          file,
+
+          objectUrl,
+        };
+
+        setAssets(
+          (current) => [
+            ...current,
+            asset,
+          ]
+        );
+
+        return objectUrl;
+      },
+      []
+    );
+
+
+  /* =======================================
+     REMOVE ASSET
+  ======================================= */
+
+  const removeAsset =
+    useCallback(
+      (id: string) => {
+
+        setAssets(
+          (current) => {
+
+            const asset =
+              current.find(
+                (item) =>
+                  item.id === id
+              );
+
+            if (asset) {
+
+              URL.revokeObjectURL(
+                asset.objectUrl
+              );
+            }
+
+            return current.filter(
+              (item) =>
+                item.id !== id
+            );
+          }
+        );
+
+      },
+      []
+    );
 
 
   /* =======================================
@@ -246,35 +523,40 @@ export function EditorProvider({
 
   const pushHistory =
     useCallback(
-      (previousScene: Scene) => {
+      (
+        previousScene: Scene
+      ) => {
 
         setHistory(
           (previous) => {
 
-            const next = [
+            const nextHistory = [
               ...previous,
               previousScene,
             ];
 
-            return next.length >
+            if (
+              nextHistory.length >
               MAX_HISTORY_SIZE
-              ? next.slice(
-                  next.length -
-                    MAX_HISTORY_SIZE
-                )
-              : next;
+            ) {
+              return nextHistory.slice(
+                nextHistory.length -
+                  MAX_HISTORY_SIZE
+              );
+            }
+
+            return nextHistory;
           }
         );
 
         setFuture([]);
-
       },
       []
     );
 
 
   /* =======================================
-     COMMIT
+     COMMIT SCENE
   ======================================= */
 
   const commitScene =
@@ -285,118 +567,447 @@ export function EditorProvider({
         ) => Scene
       ) => {
 
-        setScene((current) => {
+        setScene(
+          (current) => {
 
-          const nextScene =
-            createNextScene(
-              current
+            const nextScene =
+              createNextScene(
+                current
+              );
+
+            if (
+              nextScene === current
+            ) {
+              return current;
+            }
+
+            if (
+              transformTransaction.current
+            ) {
+              return nextScene;
+            }
+
+            pushHistory(
+              cloneScene(
+                current
+              )
             );
 
-          if (
-            nextScene === current
-          ) {
-            return current;
-          }
-
-          if (
-            transformTransaction.current
-          ) {
             return nextScene;
           }
-
-          pushHistory(current);
-
-          return nextScene;
-        });
-
+        );
       },
       [pushHistory]
     );
 
 
   /* =======================================
-     SAVE
+     SAVE SCENE
   ======================================= */
 
   const saveScene =
-    useCallback(() => {
+    useCallback(
+      async () => {
 
-      const file: SceneFile = {
-        format:
-          SCENE_FILE_FORMAT,
+        const zip =
+          new JSZip();
 
-        version:
-          SCENE_FILE_VERSION,
 
-        scene,
-      };
+        /* ---------------------------------
+           SCENE
+        --------------------------------- */
 
-      const json =
-        JSON.stringify(
-          file,
-          null,
-          2
+        const sceneForSave =
+          rewriteSceneForSave(
+            scene,
+            assetsRef.current
+          );
+
+
+        const file: SceneFile = {
+          format:
+            SCENE_FILE_FORMAT,
+
+          version:
+            SCENE_FILE_VERSION,
+
+          scene:
+            sceneForSave,
+        };
+
+
+        zip.file(
+          "scene.json",
+          JSON.stringify(
+            file,
+            null,
+            2
+          )
         );
 
-      const blob =
-        new Blob(
-          [json],
-          {
-            type:
-              "application/json",
+
+        /* ---------------------------------
+           ASSETS
+        --------------------------------- */
+
+        const usedNames =
+          new Set<string>();
+
+
+        for (
+          const asset of assetsRef.current
+        ) {
+
+          const safeName =
+            sanitizeAssetFileName(
+              asset.name
+            );
+
+          let fileName =
+            safeName;
+
+          let counter = 1;
+
+          while (
+            usedNames.has(
+              fileName
+            )
+          ) {
+
+            fileName =
+              `${counter}-${safeName}`;
+
+            counter++;
           }
+
+          usedNames.add(
+            fileName
+          );
+
+          zip.file(
+            `assets/${fileName}`,
+            asset.file
+          );
+        }
+
+
+        /* ---------------------------------
+           ZIP
+        --------------------------------- */
+
+        const blob =
+          await zip.generateAsync({
+            type: "blob",
+          });
+
+
+        const url =
+          URL.createObjectURL(
+            blob
+          );
+
+
+        const anchor =
+          document.createElement(
+            "a"
+          );
+
+        anchor.href =
+          url;
+
+        anchor.download =
+          "cybuilder-project.cybuilder";
+
+        document.body.appendChild(
+          anchor
         );
 
-      const url =
-        URL.createObjectURL(
-          blob
+        anchor.click();
+
+        document.body.removeChild(
+          anchor
         );
 
-      const anchor =
-        document.createElement(
-          "a"
+        URL.revokeObjectURL(
+          url
         );
 
-      anchor.href = url;
-
-      anchor.download =
-        "cybuilder-scene.cybuilder.json";
-
-      document.body.appendChild(
-        anchor
-      );
-
-      anchor.click();
-
-      document.body.removeChild(
-        anchor
-      );
-
-      URL.revokeObjectURL(
-        url
-      );
-
-    }, [scene]);
+      },
+      [scene]
+    );
 
 
   /* =======================================
-     LOAD
+     LOAD SCENE
   ======================================= */
 
   const loadScene =
     useCallback(
-      (nextScene: Scene) => {
+      async (
+        projectFile: File
+      ) => {
+
+        const zip =
+          await JSZip.loadAsync(
+            projectFile
+          );
+
+
+        const sceneEntry =
+          zip.file(
+            "scene.json"
+          );
+
+
+        if (!sceneEntry) {
+
+          throw new Error(
+            "Invalid CyBuilder project: scene.json is missing."
+          );
+        }
+
+
+        const text =
+          await sceneEntry.async(
+            "text"
+          );
+
+
+        const parsed =
+          JSON.parse(
+            text
+          ) as Partial<SceneFile>;
+
+
+        if (
+          parsed.format !==
+          SCENE_FILE_FORMAT
+        ) {
+
+          throw new Error(
+            "This is not a CyBuilder project."
+          );
+        }
+
+
+        if (
+          parsed.version !== 2
+        ) {
+
+          throw new Error(
+            `Unsupported CyBuilder project version: ${String(
+              parsed.version
+            )}`
+          );
+        }
+
+
+        if (
+          !parsed.scene ||
+          !Array.isArray(
+            parsed.scene.objects
+          )
+        ) {
+
+          throw new Error(
+            "Invalid scene data."
+          );
+        }
+
+
+        const loadedScene =
+          parsed.scene;
+
+
+        /* ---------------------------------
+           RELEASE OLD ASSETS
+        --------------------------------- */
+
+        for (
+          const asset of assetsRef.current
+        ) {
+
+          URL.revokeObjectURL(
+            asset.objectUrl
+          );
+        }
+
+
+        /* ---------------------------------
+           LOAD ASSETS
+        --------------------------------- */
+
+        const loadedAssets:
+          LocalAsset[] = [];
+
+
+        const assetEntries =
+          Object.keys(
+            zip.files
+          ).filter(
+            (name) =>
+              name.startsWith(
+                "assets/"
+              ) &&
+              !zip.files[name].dir
+          );
+
+
+        for (
+          const path of assetEntries
+        ) {
+
+          const entry =
+            zip.files[path];
+
+
+          const blob =
+            await entry.async(
+              "blob"
+            );
+
+
+          const fileName =
+            path.slice(
+              "assets/".length
+            );
+
+
+          const file =
+            new File(
+              [
+                blob,
+              ],
+              fileName,
+              {
+                type:
+                  blob.type ||
+                  "application/octet-stream",
+              }
+            );
+
+
+          const objectUrl =
+            URL.createObjectURL(
+              file
+            );
+
+
+          loadedAssets.push({
+            id:
+              createAssetId(),
+
+            name:
+              fileName,
+
+            type:
+              file.type,
+
+            file,
+
+            objectUrl,
+          });
+        }
+
+
+        /* ---------------------------------
+           REWRITE ASSET PATHS
+        --------------------------------- */
+
+        const assetByPath =
+          new Map<
+            string,
+            LocalAsset
+          >();
+
+
+        for (
+          const asset of loadedAssets
+        ) {
+
+          assetByPath.set(
+            `assets/${asset.name}`,
+            asset
+          );
+        }
+
+
+        const restoredScene =
+          cloneScene(
+            loadedScene
+          );
+
+
+        for (
+          const object of
+            restoredScene.objects
+        ) {
+
+          const props =
+            object.props as Record<
+              string,
+              unknown
+            >;
+
+
+          for (
+            const key of Object.keys(
+              props
+            )
+          ) {
+
+            const value =
+              props[key];
+
+
+            if (
+              typeof value !==
+              "string"
+            ) {
+              continue;
+            }
+
+
+            const asset =
+              assetByPath.get(
+                value
+              );
+
+
+            if (!asset) {
+              continue;
+            }
+
+
+            props[key] =
+              asset.objectUrl;
+          }
+        }
+
+
+        /* ---------------------------------
+           COMMIT
+        --------------------------------- */
 
         transformTransaction.current =
           null;
 
+
         setScene(
-          structuredClone(nextScene)
+          restoredScene
         );
+
+
+        setAssets(
+          loadedAssets
+        );
+
 
         setHistory([]);
 
+
         setFuture([]);
+
 
         setSelectedId(
           undefined
@@ -421,19 +1032,13 @@ export function EditorProvider({
           return;
         }
 
-        const objectExists =
-          scene.objects.some(
-            (object) =>
-              object.id === id
-          );
-
-        if (!objectExists) {
-          return;
-        }
-
         transformTransaction.current = {
           id,
-          scene,
+
+          scene:
+            cloneScene(
+              scene
+            ),
         };
 
       },
@@ -446,35 +1051,41 @@ export function EditorProvider({
   ======================================= */
 
   const endTransform =
-    useCallback(() => {
+    useCallback(
+      () => {
 
-      const transaction =
-        transformTransaction.current;
+        const transaction =
+          transformTransaction.current;
 
-      if (!transaction) {
-        return;
-      }
-
-      transformTransaction.current =
-        null;
-
-      setScene((current) => {
-
-        if (
-          current ===
-          transaction.scene
-        ) {
-          return current;
+        if (!transaction) {
+          return;
         }
 
-        pushHistory(
-          transaction.scene
+        transformTransaction.current =
+          null;
+
+
+        setScene(
+          (current) => {
+
+            if (
+              current ===
+              transaction.scene
+            ) {
+              return current;
+            }
+
+            pushHistory(
+              transaction.scene
+            );
+
+            return current;
+          }
         );
 
-        return current;
-      });
-
-    }, [pushHistory]);
+      },
+      [pushHistory]
+    );
 
 
   /* =======================================
@@ -482,58 +1093,77 @@ export function EditorProvider({
   ======================================= */
 
   const undo =
-    useCallback(() => {
-
-      if (
-        transformTransaction.current
-      ) {
-        return;
-      }
-
-      setHistory((previous) => {
+    useCallback(
+      () => {
 
         if (
-          previous.length === 0
+          transformTransaction.current
         ) {
-          return previous;
+          return;
         }
 
-        const previousScene =
-          previous[
-            previous.length - 1
-          ];
+        setHistory(
+          (previous) => {
 
-        setScene((current) => {
+            if (
+              previous.length === 0
+            ) {
+              return previous;
+            }
 
-          setFuture(
-            (currentFuture) => {
 
-              const next = [
-                ...currentFuture,
-                current,
+            const previousScene =
+              previous[
+                previous.length - 1
               ];
 
-              return next.length >
-                MAX_HISTORY_SIZE
-                ? next.slice(
-                    next.length -
+
+            setScene(
+              (current) => {
+
+                setFuture(
+                  (currentFuture) => {
+
+                    const nextFuture = [
+                      ...currentFuture,
+                      cloneScene(
+                        current
+                      ),
+                    ];
+
+
+                    if (
+                      nextFuture.length >
                       MAX_HISTORY_SIZE
-                  )
-                : next;
-            }
-          );
+                    ) {
 
-          return previousScene;
-        });
+                      return nextFuture.slice(
+                        nextFuture.length -
+                          MAX_HISTORY_SIZE
+                      );
+                    }
 
-        return previous.slice(
-          0,
-          -1
+
+                    return nextFuture;
+                  }
+                );
+
+
+                return previousScene;
+              }
+            );
+
+
+            return previous.slice(
+              0,
+              -1
+            );
+          }
         );
 
-      });
-
-    }, []);
+      },
+      []
+    );
 
 
   /* =======================================
@@ -541,58 +1171,77 @@ export function EditorProvider({
   ======================================= */
 
   const redo =
-    useCallback(() => {
-
-      if (
-        transformTransaction.current
-      ) {
-        return;
-      }
-
-      setFuture((previous) => {
+    useCallback(
+      () => {
 
         if (
-          previous.length === 0
+          transformTransaction.current
         ) {
-          return previous;
+          return;
         }
 
-        const nextScene =
-          previous[
-            previous.length - 1
-          ];
+        setFuture(
+          (previous) => {
 
-        setScene((current) => {
+            if (
+              previous.length === 0
+            ) {
+              return previous;
+            }
 
-          setHistory(
-            (currentHistory) => {
 
-              const next = [
-                ...currentHistory,
-                current,
+            const nextScene =
+              previous[
+                previous.length - 1
               ];
 
-              return next.length >
-                MAX_HISTORY_SIZE
-                ? next.slice(
-                    next.length -
+
+            setScene(
+              (current) => {
+
+                setHistory(
+                  (currentHistory) => {
+
+                    const nextHistory = [
+                      ...currentHistory,
+                      cloneScene(
+                        current
+                      ),
+                    ];
+
+
+                    if (
+                      nextHistory.length >
                       MAX_HISTORY_SIZE
-                  )
-                : next;
-            }
-          );
+                    ) {
 
-          return nextScene;
-        });
+                      return nextHistory.slice(
+                        nextHistory.length -
+                          MAX_HISTORY_SIZE
+                      );
+                    }
 
-        return previous.slice(
-          0,
-          -1
+
+                    return nextHistory;
+                  }
+                );
+
+
+                return nextScene;
+              }
+            );
+
+
+            return previous.slice(
+              0,
+              -1
+            );
+          }
         );
 
-      });
-
-    }, []);
+      },
+      []
+    );
 
 
   /* =======================================
@@ -601,50 +1250,71 @@ export function EditorProvider({
 
   const setEditorActive =
     useCallback(
-      (active: boolean) => {
-        setEditorActiveState(active);
+      (
+        active: boolean
+      ) => {
+
+        setEditorActiveState(
+          active
+        );
       },
       []
     );
 
 
   const toggleEditor =
-    useCallback(() => {
-      setEditorActiveState(
-        (current) => !current
-      );
-    }, []);
-
-
-  /* =======================================
-     SELECTION
-  ======================================= */
-
-  const select =
     useCallback(
-      (id?: string) => {
-        setSelectedId(id);
+      () => {
+
+        setEditorActiveState(
+          (current) =>
+            !current
+        );
+
       },
       []
     );
 
 
   /* =======================================
-     ADD
+     SELECT
+  ======================================= */
+
+  const select =
+    useCallback(
+      (
+        id?: string
+      ) => {
+
+        setSelectedId(
+          id
+        );
+
+      },
+      []
+    );
+
+
+  /* =======================================
+     ADD OBJECT
   ======================================= */
 
   const addObject =
     useCallback(
-      (object: SceneObject) => {
+      (
+        object: SceneObject
+      ) => {
 
         commitScene(
-          (current): Scene => ({
+          (current) => ({
+
             ...current,
 
             objects: [
               ...current.objects,
-              structuredClone(object),
+              object,
             ],
+
           })
         );
 
@@ -654,17 +1324,21 @@ export function EditorProvider({
 
 
   /* =======================================
-     REMOVE
+     REMOVE OBJECT
   ======================================= */
 
   const removeObject =
     useCallback(
-      (id: string) => {
+      (
+        id: string
+      ) => {
 
-        let removedIds: string[] = [];
+        let removedIds:
+          string[] = [];
+
 
         commitScene(
-          (current): Scene => {
+          (current) => {
 
             const exists =
               current.objects.some(
@@ -672,19 +1346,24 @@ export function EditorProvider({
                   object.id === id
               );
 
+
             if (!exists) {
               return current;
             }
 
+
             removedIds = [
               id,
+
               ...getDescendantIds(
                 current.objects,
                 id
               ),
             ];
 
+
             return {
+
               ...current,
 
               objects:
@@ -694,17 +1373,27 @@ export function EditorProvider({
                       object.id
                     )
                 ),
-            };
 
+            };
           }
         );
 
+
         setSelectedId(
-          (current) =>
-            current &&
-            removedIds.includes(current)
-              ? undefined
-              : current
+          (current) => {
+
+            if (
+              current &&
+              removedIds.includes(
+                current
+              )
+            ) {
+
+              return undefined;
+            }
+
+            return current;
+          }
         );
 
       },
@@ -718,14 +1407,17 @@ export function EditorProvider({
 
   const duplicateObject =
     useCallback(
-      (id: string) => {
+      (
+        id: string
+      ) => {
 
         let duplicatedId:
           | string
           | undefined;
 
+
         commitScene(
-          (current): Scene => {
+          (current) => {
 
             const original =
               current.objects.find(
@@ -733,11 +1425,14 @@ export function EditorProvider({
                   object.id === id
               );
 
+
             if (!original) {
               return current;
             }
 
-            let newId: string;
+
+            let newId = "";
+
 
             do {
 
@@ -753,43 +1448,64 @@ export function EditorProvider({
               )
             );
 
+
             duplicatedId =
               newId;
 
-            const duplicate =
-              structuredClone(
+
+            const duplicate:
+              SceneObject = {
+
+              ...structuredClone(
                 original
-              );
+              ),
 
-            duplicate.id =
-              newId;
+              id:
+                newId,
 
-            duplicate.transform = {
-              ...duplicate.transform,
+              parentId:
+                original.parentId,
 
-              position: [
-                duplicate.transform.position[0] +
-                  0.75,
+              transform: {
 
-                duplicate.transform.position[1],
+                ...original.transform,
 
-                duplicate.transform.position[2],
-              ],
+                position: [
+
+                  original.transform
+                    .position[0] + 0.75,
+
+                  original.transform
+                    .position[1],
+
+                  original.transform
+                    .position[2],
+
+                ],
+              },
+
             };
 
+
             return {
+
               ...current,
 
               objects: [
                 ...current.objects,
                 duplicate,
               ],
+
             };
 
           }
         );
 
-        if (duplicatedId) {
+
+        if (
+          duplicatedId
+        ) {
+
           setSelectedId(
             duplicatedId
           );
@@ -812,7 +1528,7 @@ export function EditorProvider({
       ) => {
 
         commitScene(
-          (current): Scene => {
+          (current) => {
 
             const object =
               current.objects.find(
@@ -820,13 +1536,16 @@ export function EditorProvider({
                   item.id === id
               );
 
+
             if (!object) {
               return current;
             }
 
-            const objects =
+
+            const objects:
+              SceneObject[] =
               current.objects.map(
-                (item): SceneObject => {
+                (item) => {
 
                   if (
                     item.id !== id
@@ -834,12 +1553,12 @@ export function EditorProvider({
                     return item;
                   }
 
-                  const updated = {
+
+                  return {
                     ...item,
 
                     transform:
-                      changes.transform !==
-                      undefined
+                      changes.transform
                         ? {
                             ...item.transform,
                             ...changes.transform,
@@ -847,8 +1566,7 @@ export function EditorProvider({
                         : item.transform,
 
                     props:
-                      changes.props !==
-                      undefined
+                      changes.props
                         ? {
                             ...item.props,
                             ...changes.props,
@@ -856,45 +1574,32 @@ export function EditorProvider({
                         : item.props,
 
                     parentId:
-                      Object.prototype.hasOwnProperty.call(
-                        changes,
-                        "parentId"
-                      )
-                        ? changes.parentId
-                        : item.parentId,
+                      changes.parentId ??
+                      item.parentId,
 
                     name:
-                      Object.prototype.hasOwnProperty.call(
-                        changes,
-                        "name"
-                      )
-                        ? changes.name
-                        : item.name,
+                      changes.name ??
+                      item.name,
 
                     visible:
-                      Object.prototype.hasOwnProperty.call(
-                        changes,
-                        "visible"
-                      )
-                        ? changes.visible
-                        : item.visible,
+                      changes.visible ??
+                      item.visible,
 
                     locked:
-                      Object.prototype.hasOwnProperty.call(
-                        changes,
-                        "locked"
-                      )
-                        ? changes.locked
-                        : item.locked,
-                  };
+                      changes.locked ??
+                      item.locked,
 
-                  return updated as SceneObject;
+                  } as SceneObject;
                 }
               );
 
+
             return {
+
               ...current,
+
               objects,
+
             };
 
           }
@@ -917,7 +1622,7 @@ export function EditorProvider({
       ) => {
 
         commitScene(
-          (current): Scene => {
+          (current) => {
 
             const exists =
               current.objects.some(
@@ -925,27 +1630,40 @@ export function EditorProvider({
                   item.id === id
               );
 
+
             if (!exists) {
               return current;
             }
 
+
             return {
+
               ...current,
 
               objects:
                 current.objects.map(
-                  (item) =>
-                    item.id === id
-                      ? ({
-                          ...item,
+                  (item) => {
 
-                          transform: {
-                            ...item.transform,
-                            ...changes,
-                          },
-                        } as SceneObject)
-                      : item
+                    if (
+                      item.id !== id
+                    ) {
+                      return item;
+                    }
+
+
+                    return {
+
+                      ...item,
+
+                      transform: {
+                        ...item.transform,
+                        ...changes,
+                      },
+
+                    } as SceneObject;
+                  }
                 ),
+
             };
 
           }
@@ -968,7 +1686,7 @@ export function EditorProvider({
       ) => {
 
         commitScene(
-          (current): Scene => {
+          (current) => {
 
             const object =
               current.objects.find(
@@ -976,12 +1694,11 @@ export function EditorProvider({
                   item.id === id
               );
 
+
             if (!object) {
               return current;
             }
 
-
-            /* REMOVE PARENT */
 
             if (
               parentId === undefined
@@ -994,7 +1711,9 @@ export function EditorProvider({
                 return current;
               }
 
+
               return {
+
                 ...current,
 
                 objects:
@@ -1008,11 +1727,10 @@ export function EditorProvider({
                           } as SceneObject)
                         : item
                   ),
+
               };
             }
 
-
-            /* SELF */
 
             if (
               parentId === id
@@ -1021,26 +1739,24 @@ export function EditorProvider({
             }
 
 
-            /* PARENT EXISTS */
-
             const parent =
               current.objects.find(
                 (item) =>
                   item.id === parentId
               );
 
+
             if (!parent) {
               return current;
             }
 
-
-            /* CIRCULAR */
 
             const descendants =
               getDescendantIds(
                 current.objects,
                 id
               );
+
 
             if (
               descendants.includes(
@@ -1051,8 +1767,6 @@ export function EditorProvider({
             }
 
 
-            /* ALREADY PARENTED */
-
             if (
               object.parentId ===
               parentId
@@ -1062,6 +1776,7 @@ export function EditorProvider({
 
 
             return {
+
               ...current,
 
               objects:
@@ -1074,6 +1789,7 @@ export function EditorProvider({
                         } as SceneObject)
                       : item
                 ),
+
             };
 
           }
@@ -1101,6 +1817,17 @@ export function EditorProvider({
         editorActive,
 
 
+        /* ASSETS */
+
+        assets,
+
+        addAsset,
+
+        removeAsset,
+
+
+        /* HISTORY */
+
         canUndo:
           history.length > 0,
 
@@ -1112,8 +1839,12 @@ export function EditorProvider({
         redo,
 
 
+        /* SELECTION */
+
         select,
 
+
+        /* TRANSFORM */
 
         setTransformMode,
 
@@ -1122,10 +1853,14 @@ export function EditorProvider({
         endTransform,
 
 
+        /* EDITOR */
+
         setEditorActive,
 
         toggleEditor,
 
+
+        /* SCENE */
 
         addObject,
 
@@ -1138,8 +1873,12 @@ export function EditorProvider({
         updateTransform,
 
 
+        /* HIERARCHY */
+
         setParent,
 
+
+        /* SAVE / LOAD */
 
         saveScene,
 
@@ -1147,28 +1886,57 @@ export function EditorProvider({
 
       }),
       [
+
         scene,
+
         selectedId,
+
         transformMode,
+
         editorActive,
-        history.length,
-        future.length,
+
+        assets,
+
+        history,
+
+        future,
+
+        addAsset,
+
+        removeAsset,
+
         undo,
+
         redo,
+
         select,
+
         setTransformMode,
+
         beginTransform,
+
         endTransform,
+
         setEditorActive,
+
         toggleEditor,
+
         addObject,
+
         removeObject,
+
         duplicateObject,
+
         updateObject,
+
         updateTransform,
+
         setParent,
+
         saveScene,
+
         loadScene,
+
       ]
     );
 
@@ -1194,11 +1962,14 @@ export function useEditor() {
       EditorContext
     );
 
+
   if (!context) {
+
     throw new Error(
       "useEditor must be used inside an EditorProvider"
     );
   }
+
 
   return context;
 }

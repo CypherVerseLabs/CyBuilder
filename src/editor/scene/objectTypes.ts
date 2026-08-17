@@ -9,7 +9,9 @@ import {
 
 export type Transform = {
   position: Vector3Tuple;
+
   rotation: Vector3Tuple;
+
   scale: Vector3Tuple;
 };
 
@@ -65,7 +67,9 @@ export type ModelObject =
 
     props: {
       src: string;
+
       center: boolean;
+
       normalize: boolean;
     };
   };
@@ -81,9 +85,13 @@ export type VideoObject =
 
     props: {
       src: string;
+
       size: number;
+
       framed: boolean;
+
       muted: boolean;
+
       volume: number;
     };
   };
@@ -99,7 +107,9 @@ export type AudioObject =
 
     props: {
       url: string;
+
       volume: number;
+
       rollOff: number;
     };
   };
@@ -115,7 +125,9 @@ export type HDRIObject =
 
     props: {
       src: string;
+
       disableBackground: boolean;
+
       disableEnvironment: boolean;
     };
   };
@@ -145,7 +157,9 @@ export type FogObject =
 
     props: {
       color: string;
+
       near: number;
+
       far: number;
     };
   };
@@ -161,8 +175,13 @@ export type InfinitePlaneObject =
 
     props: {
       height: number;
+
       visible: boolean;
-      size: [number, number];
+
+      size: [
+        number,
+        number
+      ];
     };
   };
 
@@ -177,6 +196,7 @@ export type CloudySkyObject =
 
     props: {
       color: string;
+
       colors: number[];
     };
   };
@@ -192,7 +212,9 @@ export type RainObject =
 
     props: {
       count: number;
+
       color: string;
+
       size: number;
     };
   };
@@ -208,6 +230,7 @@ export type TitleObject =
 
     props: {
       text: string;
+
       image: string;
     };
   };
@@ -223,6 +246,7 @@ export type LinkObject =
 
     props: {
       href: string;
+
       text: string;
     };
   };
@@ -238,7 +262,9 @@ export type SpeakerObject =
 
     props: {
       audioUrl: string;
+
       distance: number;
+
       volume: number;
     };
   };
@@ -254,6 +280,7 @@ export type GroundObject =
 
     props: {
       size: number;
+
       gridSize: number;
     };
   };
@@ -268,7 +295,11 @@ export type LostFloorObject =
     type: "lostFloor";
 
     props: {
-      size: [number, number];
+      size: [
+        number,
+        number
+      ];
+
       visible: boolean;
     };
   };
@@ -311,7 +342,9 @@ export type Scene = {
 
 export const defaultTransform: Transform = {
   position: [0, 0, 0],
+
   rotation: [0, 0, 0],
+
   scale: [1, 1, 1],
 };
 
@@ -351,5 +384,5 @@ export function cloneSceneObject(
     },
   };
 
-  return cloned as typeof object;
+  return cloned as SceneObject;
 }

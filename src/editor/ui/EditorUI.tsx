@@ -3,6 +3,7 @@ import { Html } from "@react-three/drei";
 import {
   CSSProperties,
   ReactNode,
+  ChangeEvent,
   useEffect,
   useRef,
   useState,
@@ -54,104 +55,9 @@ function cloneSceneObject(
 }
 
 
-/* =========================================
-   SCENE FILE
-========================================= */
-
-type SceneFile = {
-  format: string;
-
-  version: number;
-
-  scene: Scene;
-};
 
 
-/* =========================================
-   PARSE SCENE FILE
-========================================= */
 
-function parseSceneFile(
-  value: unknown
-): Scene {
-
-  if (
-    typeof value !== "object" ||
-    value === null
-  ) {
-    throw new Error(
-      "Invalid CyBuilder scene file."
-    );
-  }
-
-  const file =
-    value as Partial<SceneFile>;
-
-
-  /* -----------------------------------------
-     FORMAT
-  ----------------------------------------- */
-
-  if (
-    file.format !==
-    "cybuilder-scene"
-  ) {
-    throw new Error(
-      "This file is not a CyBuilder scene."
-    );
-  }
-
-
-  /* -----------------------------------------
-     VERSION
-  ----------------------------------------- */
-
-  if (
-    file.version !== 1
-  ) {
-    throw new Error(
-      `Unsupported CyBuilder scene version: ${String(
-        file.version
-      )}`
-    );
-  }
-
-
-  /* -----------------------------------------
-     SCENE
-  ----------------------------------------- */
-
-  if (
-    !file.scene ||
-    typeof file.scene !== "object"
-  ) {
-    throw new Error(
-      "Scene data is missing."
-    );
-  }
-
-
-  const scene =
-    file.scene as Scene;
-
-
-  /* -----------------------------------------
-     OBJECTS
-  ----------------------------------------- */
-
-  if (
-    !Array.isArray(
-      scene.objects
-    )
-  ) {
-    throw new Error(
-      "Scene objects are missing."
-    );
-  }
-
-
-  return scene;
-}
 
 
 /* =========================================
@@ -529,66 +435,40 @@ export default function EditorUI() {
   ========================================= */
 
   const handleLoadFile = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  event: ChangeEvent<HTMLInputElement>
+) => {
 
-    const file =
-      event.target.files?.[0];
+  const file =
+    event.target.files?.[0];
 
+  if (!file) {
+    return;
+  }
 
-    if (!file) {
-      return;
-    }
+  try {
 
+    await loadScene(
+      file
+    );
 
-    try {
+  } catch (error) {
 
-      const text =
-        await file.text();
+    console.error(
+      "Failed to load CyBuilder project:",
+      error
+    );
 
+    window.alert(
+      error instanceof Error
+        ? error.message
+        : "Failed to load CyBuilder project."
+    );
 
-      const parsed =
-        JSON.parse(text);
+  } finally {
 
-
-      const loadedScene =
-        parseSceneFile(
-          parsed
-        );
-
-
-      loadScene(
-        loadedScene
-      );
-
-
-    } catch (error) {
-
-      console.error(
-        "Failed to load CyBuilder scene:",
-        error
-      );
-
-
-      window.alert(
-        error instanceof Error
-          ? error.message
-          : "Failed to load CyBuilder scene."
-      );
-
-
-    } finally {
-
-      /*
-       * Allows the same file to be
-       * selected again.
-       */
-
-      event.target.value = "";
-
-    }
-  };
-
+    event.target.value = "";
+  }
+};
 
   /* =========================================
      SELECTED OBJECT
@@ -970,10 +850,8 @@ export default function EditorUI() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".cybuilder.json,application/json"
-                onChange={
-                  handleLoadFile
-                }
+                accept=".cybuilder"
+                onChange={handleLoadFile}
                 style={{
                   display: "none",
                 }}
