@@ -6,17 +6,29 @@ import {
   lostWorldTemplate,
 } from "./lost";
 
-export const editorTemplates: EditorTemplate[] = [
-  lostWorldTemplate,
-];
+import {
+  foundTemplate,
+} from "./found";
+
 
 /* =========================================
    ALL TEMPLATES
 ========================================= */
 
+export const editorTemplates: EditorTemplate[] = [
+  lostWorldTemplate,
+  foundTemplate,
+];
+
+
+/* =========================================
+   GET ALL
+========================================= */
+
 export function getEditorTemplates(): EditorTemplate[] {
   return editorTemplates;
 }
+
 
 /* =========================================
    LOOKUP
@@ -30,6 +42,7 @@ export function getEditorTemplate(
       template.id === id
   );
 }
+
 
 /* =========================================
    DEFAULT
